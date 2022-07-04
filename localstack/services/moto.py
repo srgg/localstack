@@ -5,8 +5,8 @@ import sys
 from functools import lru_cache
 from typing import Callable
 
+import moto.backends as moto_backends
 from botocore.parsers import create_parser
-from moto.backends import get_backend as get_moto_backend
 from moto.core.exceptions import RESTError
 from moto.core.utils import BackendDict
 from moto.moto_server.utilities import RegexConverter
@@ -14,6 +14,7 @@ from werkzeug.routing import Map, Rule
 
 from localstack import __version__ as localstack_version
 from localstack import config
+from localstack.aws.accounts import get_aws_account_id
 from localstack.aws.api import (
     CommonServiceException,
     HttpRequest,
@@ -28,6 +29,7 @@ from localstack.aws.forwarder import (
     create_aws_request_context,
 )
 from localstack.aws.skeleton import DispatchTable
+from localstack.constants import DEFAULT_AWS_ACCOUNT_ID
 from localstack.utils.strings import to_bytes
 
 MotoResponse = HttpBackendResponse
@@ -135,6 +137,9 @@ def dispatch_to_moto(context: RequestContext) -> MotoResponse:
     # this is where we skip the HTTP roundtrip between the moto server and the boto client
     dispatch = get_dispatcher(service.service_name, request.path)
 
+    # TODO@viren temporory hack. This is to be refactored when account ID no longer lives in global TLS
+    request.headers.add("x-moto-account-id", get_aws_account_id())
+
     try:
         return dispatch(request, request.url, request.headers)
     except RESTError as e:
@@ -169,9 +174,14 @@ def load_moto_routing_table(service: str) -> Map:
     :return: a new Map object
     """
     # code from moto.moto_server.werkzeug_app.create_backend_app
-    backend_dict: BackendDict = get_moto_backend(service)
-    if "us-east-1" in backend_dict:
-        backend = backend_dict["us-east-1"]
+    backend_dict = moto_backends.get_backend(service)
+    # Get an instance of this backend.
+    # We'll only use this backend to resolve the URL's, so the exact region/account_id is irrelevant
+    if isinstance(backend_dict, BackendDict):
+        if "us-east-1" in backend_dict[DEFAULT_AWS_ACCOUNT_ID]:
+            backend = backend_dict[DEFAULT_AWS_ACCOUNT_ID]["us-east-1"]
+        else:
+            backend = backend_dict[DEFAULT_AWS_ACCOUNT_ID]["global"]
     else:
         backend = backend_dict["global"]
 
